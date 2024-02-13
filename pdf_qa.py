@@ -1,10 +1,10 @@
 # Import necessary modules and define env variables
 
-from langchain.embeddings.openai import OpenAIEmbeddings
+# from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQAWithSourcesChain
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts.chat import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
@@ -16,6 +16,11 @@ import chainlit as cl
 import PyPDF2
 from io import BytesIO
 
+from pprint import pprint
+import inspect
+# from langchain.vectorstores import ElasticsearchStore
+from langchain_community.vectorstores import ElasticsearchStore
+from elasticsearch import Elasticsearch
 
 from dotenv import load_dotenv
 
@@ -23,7 +28,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENAI_API_KEY= os.getenv("OPENAI_API_KEY")
-
+ES_USER = os.getenv("ES_USER")
+ES_PASSWORD = os.getenv("ES_PASSWORD")
+elastic_index_name='pdf_docs'
 
 # text_splitter and system template
 
@@ -75,11 +82,19 @@ async def on_chat_start():
 
     file = files[0]
 
+    # print("type: ", type(file))
+    # print("file: ", file)
+    # pprint(vars(file))
+    # print(file.content)
+ 
     msg = cl.Message(content=f"Processing `{file.name}`...")
     await msg.send()
 
     # Read the PDF file
-    pdf_stream = BytesIO(file.content)
+    # pdf_stream = BytesIO(file.content)
+    with open(file.path, 'rb') as f:
+        pdf_content = f.read()
+    pdf_stream = BytesIO(pdf_content)
     pdf = PyPDF2.PdfReader(pdf_stream)
     pdf_text = ""
     for page in pdf.pages:
@@ -93,17 +108,63 @@ async def on_chat_start():
 
     # Create a Chroma vector store
     embeddings = OpenAIEmbeddings()
-    docsearch = await cl.make_async(Chroma.from_texts)(
-        texts, embeddings, metadatas=metadatas
+  
+    url = f"https://{ES_USER}:{ES_PASSWORD}@192.168.0.3:9200"
+ 
+    connection = Elasticsearch(
+        hosts=[url], 
+        ca_certs = "./http_ca.crt", 
+        verify_certs = True
     )
+    # print(connection.info())
+  
+    # docsearch = ElasticsearchStore.from_texts( 
+    #                 texts,
+    #                 embedding = embeddings, 
+    #                 es_url = url, 
+    #                 es_connection = connection,
+    #                 index_name = elastic_index_name, 
+    #                 es_user = ES_USER,
+    #                 es_password = ES_PASSWORD,
+    #                 metadatas=metadatas)
+        
+
+    docsearch = None
+    
+    if not connection.indices.exists(index=elastic_index_name):
+        print("The index does not exist, going to generate embeddings")   
+        docsearch = await cl.make_async(ElasticsearchStore.from_texts)( 
+                texts,
+                embedding = embeddings, 
+                es_url = url, 
+                es_connection = connection,
+                index_name = elastic_index_name, 
+                es_user = ES_USER,
+                es_password = ES_PASSWORD,
+                metadatas=metadatas
+        )
+    else: 
+        print("The index already existed")
+        
+        docsearch = ElasticsearchStore(
+            es_connection=connection,
+            embedding=embeddings,
+            es_url = url, 
+            index_name = elastic_index_name, 
+            es_user = ES_USER,
+            es_password = ES_PASSWORD    
+        )
+        
+    # docsearch = await cl.make_async(Chroma.from_texts)(
+    #     texts, embeddings, metadatas=metadatas
+    # )
 
     # Create a chain that uses the Chroma vector store
     chain = RetrievalQAWithSourcesChain.from_chain_type(
         ChatOpenAI(temperature=0),
         chain_type="stuff",
-        retriever=docsearch.as_retriever(),
+        retriever=docsearch.as_retriever(search_kwargs={"k": 4}),
     )
-    
 
     # Save the metadata and texts in the user session
     cl.user_session.set("metadatas", metadatas)
@@ -124,6 +185,10 @@ async def main(message:str):
         stream_final_answer=True, answer_prefix_tokens=["FINAL", "ANSWER"]
     )
     cb.answer_reached = True
+    
+    print("message: ", message)
+    pprint(vars(message))
+    print(message.content)
     res = await chain.acall(message, callbacks=[cb])
 
     answer = res["answer"]
@@ -134,6 +199,8 @@ async def main(message:str):
     metadatas = cl.user_session.get("metadatas")
     all_sources = [m["source"] for m in metadatas]
     texts = cl.user_session.get("texts")
+    
+    print("texts: ", texts)
 
     if sources:
         found_sources = []
