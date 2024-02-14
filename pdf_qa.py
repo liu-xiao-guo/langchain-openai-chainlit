@@ -109,25 +109,13 @@ async def on_chat_start():
     # Create a Chroma vector store
     embeddings = OpenAIEmbeddings()
   
-    url = f"https://{ES_USER}:{ES_PASSWORD}@192.168.0.3:9200"
+    url = f"https://{ES_USER}:{ES_PASSWORD}@localhost:9200"
  
     connection = Elasticsearch(
         hosts=[url], 
         ca_certs = "./http_ca.crt", 
         verify_certs = True
     )
-    # print(connection.info())
-  
-    # docsearch = ElasticsearchStore.from_texts( 
-    #                 texts,
-    #                 embedding = embeddings, 
-    #                 es_url = url, 
-    #                 es_connection = connection,
-    #                 index_name = elastic_index_name, 
-    #                 es_user = ES_USER,
-    #                 es_password = ES_PASSWORD,
-    #                 metadatas=metadatas)
-        
 
     docsearch = None
     
@@ -154,10 +142,6 @@ async def on_chat_start():
             es_user = ES_USER,
             es_password = ES_PASSWORD    
         )
-        
-    # docsearch = await cl.make_async(Chroma.from_texts)(
-    #     texts, embeddings, metadatas=metadatas
-    # )
 
     # Create a chain that uses the Chroma vector store
     chain = RetrievalQAWithSourcesChain.from_chain_type(
@@ -181,6 +165,7 @@ async def on_chat_start():
 async def main(message:str):
 
     chain = cl.user_session.get("chain")  # type: RetrievalQAWithSourcesChain
+    print("chain type: ", type(chain))
     cb = cl.AsyncLangchainCallbackHandler(
         stream_final_answer=True, answer_prefix_tokens=["FINAL", "ANSWER"]
     )
@@ -189,7 +174,7 @@ async def main(message:str):
     print("message: ", message)
     pprint(vars(message))
     print(message.content)
-    res = await chain.acall(message, callbacks=[cb])
+    res = await chain.acall(message.content, callbacks=[cb])
 
     answer = res["answer"]
     sources = res["sources"].strip()
